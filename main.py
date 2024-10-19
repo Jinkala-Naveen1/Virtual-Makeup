@@ -1,24 +1,27 @@
-from utils import *
+import cv2
+import numpy as np
+from Final_code import apply_makeup
 
-# Video Input from Webcam
-video_capture = cv2.VideoCapture(0)
-while True:
-    ret_val, frame = video_capture.read()
-    frame = cv2.flip(frame, 1)
-    if ret_val:
-        cv2.imshow("Original", frame)
-        feat_applied = apply_makeup(frame, True, 'lips', False)
-        cv2.imshow("Feature", feat_applied)
+# Load the input image in color mode
+image = cv2.imread('input.jpg', cv2.IMREAD_COLOR)
 
-        if cv2.waitKey(1) == 27:
-            break
+# Check if the image was loaded successfully
+if image is None:
+    raise ValueError("Input image could not be loaded. Check the file path.")
 
-# # Static Images
-# image = cv2.imread("model.jpg", cv2.IMREAD_UNCHANGED)
-# output = apply_makeup(image, False, 'foundation', False)
-#
-# cv2.imshow("Original", image)
-# cv2.imshow("Feature", output)
-#
-# cv2.waitKey(0)
-# cv2.destroyAllWindows()
+# Apply makeup effect (e.g., 'lips')
+try:
+    output = apply_makeup(image, False, 'lips', False)
+except Exception as e:
+    raise RuntimeError(f"An error occurred during makeup application: {e}")
+
+# Ensure the output is in uint8 format
+output = output.astype(np.uint8)
+
+# Display the original and processed images
+cv2.imshow("Original", image)
+cv2.imshow("Feature", output)
+
+# Wait for a key press to close the windows
+cv2.waitKey(0)
+cv2.destroyAllWindows()

@@ -1,176 +1,219 @@
 import cv2
 import numpy as np
-from landmarks import detect_landmarks, normalize_landmarks, plot_landmarks
-from mediapipe.python.solutions.face_detection import FaceDetection
+from scipy.interpolate import interp1d
+from skimage import color
+import matplotlib.pyplot as plt
 
+# Define landmarks for lips, face, and cheeks
 upper_lip = [61, 185, 40, 39, 37, 0, 267, 269, 270, 408, 415, 272, 271, 268, 12, 38, 41, 42, 191, 78, 76]
 lower_lip = [61, 146, 91, 181, 84, 17, 314, 405, 320, 307, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
-face_conn = [10, 338, 297, 332, 284, 251, 389, 264, 447, 376, 433, 288, 367, 397, 365, 379, 378, 400, 377, 152,
-             148, 176, 149, 150, 136, 172, 138, 213, 147, 234, 127, 162, 21, 54, 103, 67, 109]
 cheeks = [425, 205]
 
+# Source color for eyeshadow
+R, G, B = (102., 0., 51.)
+inten = 0.8
 
+# Points for eyeshadow from the file
+lower_left_end = 5
+upper_left_end = 11
+lower_right_end = 16
+upper_right_end = 22
+
+# Function for interpolation
+def inter(lx=[], ly=[], k1='quadratic'):
+    unew = np.arange(lx[0], lx[-1] + 1, 1)
+    f2 = interp1d(lx, ly, kind=k1)
+    return f2, unew
+
+def ext(a, b, i, x, y):
+    indices = np.arange(int(a), int(b))
+    x.extend(indices.tolist())
+    y.extend([i] * len(indices))
+
+def extleft(a, b, i, xleft, yleft):
+    indices = np.arange(int(a), int(b))
+    xleft.extend(indices.tolist())
+    yleft.extend([i] * len(indices))
+
+def extright(a, b, i, xright, yright):
+    indices = np.arange(int(a), int(b))
+    xright.extend(indices.tolist())
+    yright.extend([i] * len(indices))
+
+def apply_eyeshadow_effect(im):
+    """
+    Applies eyeshadow effect to the image.
+    """
+    # Load eyeshadow points from file
+    file = np.loadtxt('pointeyeshadow.txt')
+    points = np.floor(file)
+
+    # Points for left and right eye
+    point_down_x = np.array(points[:lower_left_end][:, 0])
+    point_down_y = np.array(points[:lower_left_end][:, 1])
+    point_up_x = np.array(points[lower_left_end:upper_left_end][:, 0])
+    point_up_y = np.array(points[lower_left_end:upper_left_end][:, 1])
+    point_down_x_right = np.array(points[upper_left_end:lower_right_end][:, 0])
+    point_down_y_right = np.array(points[upper_left_end:lower_right_end][:, 1])
+    point_up_x_right = np.array(points[lower_right_end:upper_right_end][:, 0])
+    point_up_y_right = np.array(points[lower_right_end:upper_right_end][:, 1])
+
+    # Offset adjustments for eyeshadow
+    offset_left = max(point_down_y) - min(point_up_y)
+
+    # Adjust array length to match `point_up_y` length
+    point_up_y += offset_left * np.array([0.625, 0.3, 0.15, 0.1, 0.2, 0.1])
+    point_down_y[0] += offset_left * 0.625
+
+    offset_right = max(point_down_y_right) - min(point_up_y_right)
+
+    # Adjust array length to match `point_up_y_right` length
+    point_up_y_right += offset_right * np.array([0.625, 0.2, 0.1, 0.15, 0.3, 0.2])
+    point_down_y_right[-1] += offset_right * 0.625
+
+    # Create interpolation functions for left and right eyes
+    l_l = inter(point_down_x, point_down_y, 'cubic')
+    u_l = inter(point_up_x, point_up_y, 'cubic')
+    l_r = inter(point_down_x_right, point_down_y_right, 'cubic')
+    u_r = inter(point_up_x_right, point_up_y_right, 'cubic')
+
+    # Prepare arrays for eyeshadow application
+    x, y, xleft, yleft, xright, yright = [], [], [], [], [], []
+    height, width = im.shape[:2]
+
+    # Extend eyeshadow regions
+    for i in range(int(l_l[1][0]), int(l_l[1][-1] + 1)):
+        ext(u_l[0](i), l_l[0](i) + 1, i, x, y)
+        extleft(u_l[0](i), l_l[0](i) + 1, i, xleft, yleft)
+
+    for i in range(int(l_r[1][0]), int(l_r[1][-1] + 1)):
+        ext(u_r[0](i), l_r[0](i) + 1, i, x, y)
+        extright(u_r[0](i), l_r[0](i) + 1, i, xright, yright)
+
+    # Ensure x and y are numpy arrays of integers
+    x = np.array(x, dtype=int)
+    y = np.array(y, dtype=int)
+
+    # **Clamp the indices to be within the image bounds**
+    x = np.clip(x, 0, height - 1)
+    y = np.clip(y, 0, width - 1)
+
+    # Convert image regions from RGB to LAB for color manipulation
+    val = color.rgb2lab((im[x, y] / 255.).reshape(len(x), 1, 3)).reshape(len(x), 3)
+
+    # Modify LAB values to apply the eyeshadow color
+    L1, A1, B1 = color.rgb2lab(np.array([R / 255., G / 255., B / 255.]).reshape(1, 1, 3)).reshape(3,)
+    val[:, 0] += (L1 - np.mean(val[:, 0])) * inten
+    val[:, 1] += (A1 - np.mean(val[:, 1])) * inten
+    val[:, 2] += (B1 - np.mean(val[:, 2])) * inten
+
+    # Create a blank image for blending the eyeshadow
+    image_blank = np.zeros_like(im)
+    image_blank[x, y] = color.lab2rgb(val.reshape(len(x), 1, 3)).reshape(len(x), 3) * 255
+
+    # Modify original image with eyeshadow
+    im[x, y] = image_blank[x, y]
+
+    # Apply Gaussian Blur and Erosion for better blending
+    filter = np.zeros((height, width))
+    cv2.fillConvexPoly(filter, np.array(np.c_[yleft, xleft], dtype='int32'), 1)
+    cv2.fillConvexPoly(filter, np.array(np.c_[yright, xright], dtype='int32'), 1)
+    filter = cv2.GaussianBlur(filter, (31, 31), 0)
+    kernel = np.ones((12, 12), np.uint8)
+    filter = cv2.erode(filter, kernel, iterations=1)
+
+    # Alpha blending of the eyeshadow with the original image
+    alpha = np.zeros([height, width, 3], dtype='float64')
+    alpha[:, :, 0] = filter
+    alpha[:, :, 1] = filter
+    alpha[:, :, 2] = filter
+
+    # Final blended output
+    output = (alpha * im + (1 - alpha) * im).astype('uint8')
+
+    return output
+
+# Main apply_makeup function
 def apply_makeup(src: np.ndarray, is_stream: bool, feature: str, show_landmarks: bool = False):
     """
-    Takes in a source image and applies effects onto it.
+    Takes in a source image and applies makeup effects onto it.
     """
-    ret_landmarks = detect_landmarks(src, is_stream)
+    if src is None:
+        print("Error: Image not loaded. Check the image path.")
+        return None
+
     height, width, _ = src.shape
-    feature_landmarks = None
+
     if feature == 'lips':
-        feature_landmarks = normalize_landmarks(ret_landmarks, height, width, upper_lip + lower_lip)
-        mask = lip_mask(src, feature_landmarks, [153, 0, 157])
+        # Apply lipstick (simplified)
+        mask = lip_mask(src, upper_lip + lower_lip, [153, 0, 157])
         output = cv2.addWeighted(src, 1.0, mask, 0.4, 0.0)
+
     elif feature == 'blush':
-        feature_landmarks = normalize_landmarks(ret_landmarks, height, width, cheeks)
-        mask = blush_mask(src, feature_landmarks, [153, 0, 157], 50)
+        # Apply blush
+        mask = blush_mask(src, cheeks, [153, 0, 157], 50)
         output = cv2.addWeighted(src, 1.0, mask, 0.3, 0.0)
-    else:  # Defaults to blush for any other thing
+
+    elif feature == 'eyeshadow':
+        # Apply eyeshadow
+        output = apply_eyeshadow_effect(src)
+
+    else:
+        # Default to foundation (gamma correction)
         skin_mask = mask_skin(src)
         output = np.where(src * skin_mask >= 1, gamma_correction(src, 1.75), src)
-    if show_landmarks and feature_landmarks is not None:
-        plot_landmarks(src, feature_landmarks, True)
+
+    if show_landmarks:
+        # Optional: Visualize landmarks
+        plot_landmarks(src)  # Assuming plot_landmarks is defined elsewhere
+
     return output
 
+# Supporting functions (stubs for lip_mask, blush_mask, mask_skin, gamma_correction, plot_landmarks)
 
-def apply_feature(src: np.ndarray, feature: str, landmarks: list, normalize: bool = False,
-                  show_landmarks: bool = False):
+def lip_mask(src, points, color):
     """
-    Performs similar to `apply_makeup` but needs the landmarks explicitly
-    Specifically implemented to reduce the computation on the server
+    Apply a lip color mask to the lips.
     """
-    height, width, _ = src.shape
-    if normalize:
-        landmarks = normalize_landmarks(landmarks, height, width)
-    if feature == 'lips':
-        mask = lip_mask(src, landmarks, [153, 0, 157])
-        output = cv2.addWeighted(src, 1.0, mask, 0.4, 0.0)
-    elif feature == 'blush':
-        mask = blush_mask(src, landmarks, [153, 0, 157], 50)
-        output = cv2.addWeighted(src, 1.0, mask, 0.3, 0.0)
-    else:  # Does not require any landmarks for skin masking -> Foundation
-        skin_mask = mask_skin(src)
-        output = np.where(src * skin_mask >= 1, gamma_correction(src, 1.75), src)
-    if show_landmarks:  # Refrain from using this during an API Call
-        plot_landmarks(src, landmarks, True)
-    return output
-
-
-def lip_mask(src: np.ndarray, points: np.ndarray, color: list):
-    """
-    Given a src image, points of lips and a desired color
-    Returns a colored mask that can be added to the src
-    """
-    mask = np.zeros_like(src)  # Create a mask
-    mask = cv2.fillPoly(mask, [points], color)  # Mask for the required facial feature
-    # Blurring the region, so it looks natural
-    # TODO: Get glossy finishes for lip colors, instead of blending in replace the region
+    mask = np.zeros_like(src)
+    mask = cv2.fillPoly(mask, [np.array(points)], color)
     mask = cv2.GaussianBlur(mask, (7, 7), 5)
     return mask
 
-
-def blush_mask(src: np.ndarray, points: np.ndarray, color: list, radius: int):
+def blush_mask(src, points, color, radius):
     """
-    Given a src image, points of the cheeks, desired color and radius
-    Returns a colored mask that can be added to the src
-    """
-    # TODO: Make the effect more subtle
-    mask = np.zeros_like(src)  # Mask that will be used for the cheeks
-    for point in points:
-        mask = cv2.circle(mask, point, radius, color, cv2.FILLED)  # Blush => Color filled circle
-        x, y = point[0] - radius, point[1] - radius  # Get the top-left of the mask
-        mask[y:y + 2 * radius, x:x + 2 * radius] = vignette(mask[y:y + 2 * radius, x:x + 2 * radius],
-                                                            10)  # Vignette on the mask
-
-    return mask
-
-
-def mask_skin(src: np.ndarray):
-    """
-    Given a source image of a person (face image)
-    returns a mask that can be identified as the skin
-    """
-    lower = np.array([0, 133, 77], dtype='uint8')  # The lower bound of skin color
-    upper = np.array([255, 173, 127], dtype='uint8')  # Upper bound of skin color
-    dst = cv2.cvtColor(src, cv2.COLOR_BGR2YCR_CB)  # Convert to YCR_CB
-    skin_mask = cv2.inRange(dst, lower, upper)  # Get the skin
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    skin_mask = cv2.dilate(skin_mask, kernel, iterations=2)[..., np.newaxis]  # Dilate to fill in blobs
-
-    if skin_mask.ndim != 3:
-        skin_mask = np.expand_dims(skin_mask, axis=-1)
-    return (skin_mask / 255).astype("uint8")  # A binary mask containing only 1s and 0s
-
-
-def face_mask(src: np.ndarray, points: np.ndarray):
-    """
-    Given a list of face landmarks, return a closed polygon mask for the same
+    Apply blush to the cheeks.
     """
     mask = np.zeros_like(src)
-    mask = cv2.fillPoly(mask, [points], (255, 255, 255))
+    for point in points:
+        mask = cv2.circle(mask, point, radius, color, cv2.FILLED)
     return mask
 
-
-def clicked_at(event, x, y, flags, params):
+def mask_skin(src):
     """
-    A useful callback that spits out the landmark index when clicked on a particular landmark
-    Note: Very sensitive to location, should be clicked exactly on the pixel
+    Create a skin mask for foundation application.
     """
-    # TODO: Add some atol to np.allclose
-    if event == cv2.EVENT_LBUTTONDOWN:
-        print(f"Clicked at {x, y}")
-        point = np.array([x, y])
-        landmarks = params.get("landmarks", None)
-        image = params.get("image", None)
-        if landmarks is not None and image is not None:
-            for idx, landmark in enumerate(landmarks):
-                if np.allclose(landmark, point):
-                    print(f"Landmark: {idx}")
-                    break
-            print("Found no landmark close to the click")
+    lower = np.array([0, 133, 77], dtype='uint8')
+    upper = np.array([255, 173, 127], dtype='uint8')
+    dst = cv2.cvtColor(src, cv2.COLOR_BGR2YCR_CB)
+    skin_mask = cv2.inRange(dst, lower, upper)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    skin_mask = cv2.dilate(skin_mask, kernel, iterations=2)[..., np.newaxis]
+    return (skin_mask / 255).astype("uint8")
 
-
-def vignette(src: np.ndarray, sigma: int):
+def gamma_correction(src, gamma, coefficient=1):
     """
-    Given a src image and a sigma, returns a vignette of the src
+    Perform gamma correction for foundation.
     """
-    height, width, _ = src.shape
-    kernel_x = cv2.getGaussianKernel(width, sigma)
-    kernel_y = cv2.getGaussianKernel(height, sigma)
-
-    kernel = kernel_y * kernel_x.T
-    mask = kernel / kernel.max()
-    blurred = cv2.convertScaleAbs(src.copy() * np.expand_dims(mask, axis=-1))
-    return blurred
-
-
-def face_bbox(src: np.ndarray, offset_x: int = 0, offset_y: int = 0):
-    """
-    Performs face detection on a src image, return bounding box coordinates with
-    an optional offset applied to the coordinates
-    """
-    height, width, _ = src.shape
-    with FaceDetection(model_selection=0) as detector:  # 0 -> dist <= 2mts from the camera
-        results = detector.process(cv2.cvtColor(src, cv2.COLOR_BGR2RGB))
-        if not results.detections:
-            return None
-    results = results.detections[0].location_data
-    x_min, y_min = results.relative_bounding_box.xmin, results.relative_bounding_box.ymin
-    box_height, box_width = results.relative_bounding_box.height, results.relative_bounding_box.width
-    x_min = int(width * x_min) - offset_x
-    y_min = int(height * y_min) - offset_y
-    box_height, box_width = int(height * box_height) + offset_y, int(width * box_width) + offset_x
-    return (x_min, y_min), (box_height, box_width)
-
-
-def gamma_correction(src: np.ndarray, gamma: float, coefficient: int = 1):
-    """
-    Performs gamma correction on a source image
-    gamma > 1 => Darker Image
-    gamma < 1 => Brighted Image
-    """
-    dst = src.copy()
-    dst = dst / 255.  # Converted to float64
+    dst = src / 255.0
     dst = coefficient * np.power(dst, gamma)
     dst = (dst * 255).astype('uint8')
     return dst
+
+# Placeholder for plot_landmarks function if needed.
+def plot_landmarks(image):
+    """
+    Plot landmarks on the image (for debugging).
+    """
+    plt.imshow(image)
+    plt.show()

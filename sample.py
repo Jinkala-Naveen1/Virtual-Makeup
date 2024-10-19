@@ -17,7 +17,7 @@ while True:
         frame = cv2.flip(frame, 1)  # Flip the frame -> Selfie
         frame_bytes = cv2.imencode(".png", frame)[1].tobytes()  # Convert image data to bytes, to send to the endpoint
         files = {"file": frame_bytes}
-        payload = {"choice": "lips"}
+        payload = {"choice": "eyeshadow"}
         response = requests.post("http://127.0.0.1:8000/apply-makeup/", files=files, params=payload)  # API Call
         if response.status_code == 200:
             image_content = response.content  # Response from the API
